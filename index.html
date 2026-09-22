@@ -25,6 +25,10 @@
   .ghost { padding: 9px 16px; border-radius: 999px; background: var(--glass); border: 1px solid var(--line);
     backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); font-size: 15px; }
   button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .score { position: fixed; left: 14px; top: calc(env(safe-area-inset-top, 0px) + 72px); z-index: 2;
+    padding: 9px 16px; border-radius: 999px; background: var(--glass); border: 1px solid var(--line);
+    font-weight: 700; font-size: 17px; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .score[hidden] { display: none; }
   .hint { position: fixed; left: 50%; transform: translateX(-50%);
     bottom: calc(env(safe-area-inset-bottom, 0px) + 22px); padding: 10px 18px; border-radius: 999px;
     background: var(--glass); border: 1px solid var(--line); font-size: 14px; white-space: nowrap;
@@ -57,13 +61,14 @@
   <button id="burst" class="ghost">Шашырату</button>
   <button id="clear" class="ghost">Тазалау</button>
 </div>
-<div id="hint" class="hint">Сұқ саусақпен нұсқа — гүл отырғыз. Алақанды аш — шашырат</div>
+<div id="score" class="score" hidden>🐚 <span id="scoreN">0</span> бал</div>
+<div id="hint" class="hint">Сұқ саусақпен нұсқа — гүл отырғыз. Алақанмен жоғары итер</div>
 
 <div id="intro" class="intro">
   <div class="card">
     <div class="row">🌻🌹🤍</div>
     <h1>Гүл таяқшасы</h1>
-    <p>Камера алдында қолыңды көтер. Сұқ саусағыңмен сызсаң — гүл өседі, алақаныңды ашсаң — бәрі шашырап кетеді.</p>
+    <p>Камера алдында қолыңды көтер. Сұқ саусағыңмен сызсаң — гүл өседі, алақаныңмен итерсең — гүлдер жоғары ұшады. Маржан режимінде маржандарды ракушкаға жинап, бал ал.</p>
     <button id="start">Камераны қосу</button>
     <div><button id="touch" class="ghost" style="margin-top:12px">Экранда саусақпен салу</button></div>
     <div id="status"></div>
@@ -171,15 +176,18 @@ let mode = 'sunflower';
 let items = [];     // гүлдер және ұшып бара жатқан маржандар
 let strands = [];   // маржан жіптері
 let sparks = [];
+let floaters = [];
+let score = 0;
 const handStates = [{}, {}];
 const HINTS = {
-  sunflower: 'Сұқ саусақпен нұсқа — күнбағыс отырғыз. Алақанды аш — шашырат',
-  rose: 'Сұқ саусақпен нұсқа — раушан отырғыз. Алақанды аш — шашырат',
-  pearl: 'Нұсқа — маржан тіз. Шымшып ұста — көтер. Алақанды аш — шашырат',
+  sunflower: 'Сұқ саусақпен нұсқа — күнбағыс отырғыз. Алақанмен жоғары итер',
+  rose: 'Сұқ саусақпен нұсқа — раушан отырғыз. Алақанмен жоғары итер',
+  pearl: 'Нұсқа — маржан тіз. Алақанды аш — ракушкаға жина. Жұдырықты түй — бал ал',
 };
 document.querySelectorAll('.modes button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.modes button').forEach(x => x.classList.remove('active'));
   b.classList.add('active'); mode = b.dataset.mode; hintEl.textContent = HINTS[mode];
+  document.getElementById('score').hidden = mode !== 'pearl';
 });
 document.getElementById('burst').onclick = () => scatter({ x: W / 2, y: H / 2 });
 document.getElementById('touch').onclick = () => document.getElementById('intro').classList.add('hidden');
@@ -226,32 +234,50 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const ext = (lm, tip, pip) => dist(lm[tip], lm[0]) > dist(lm[pip], lm[0]) * 1.12;
 
 /* ---------- Қимылдар ---------- */
-function handleHands(hands, now) {
+function handleHands(hands, now, fresh) {
   for (let i = 0; i < 2; i++) {
     const st = handStates[i], lm = hands[i];
-    if (!lm) { endStrand(st); st.grab = null; st.pointN = st.openN = st.pinchN = 0; st.last = null; continue; }
+    if (!st.shell) st.shell = { x: 0, y: 0, R: 60, o: 0, target: 0, inside: 0, visible: false };
+    const sh = st.shell;
+    if (!lm) { endStrand(st); st.grab = null; st.pointN = st.openN = st.pinchN = st.fistN = 0; st.last = null; st.palm = null; sh.visible = false; continue; }
     const handSize = dist(lm[0], lm[9]);
     const idx = ext(lm, 8, 6), mid = ext(lm, 12, 10), ring = ext(lm, 16, 14), pink = ext(lm, 20, 18);
     const pinch = dist(lm[4], lm[8]) < handSize * .33;
     const open = idx && mid && ring && pink && !pinch;
     const point = idx && !mid && !ring && !pink && !pinch;
-    st.pointN = point ? (st.pointN || 0) + 1 : 0;
-    st.openN = open ? (st.openN || 0) + 1 : 0;
-    st.pinchN = pinch ? (st.pinchN || 0) + 1 : 0;
+    const fist = !idx && !mid && !ring && !pink;
+    if (fresh) {
+      st.pointN = point ? (st.pointN || 0) + 1 : 0;
+      st.openN = open ? (st.openN || 0) + 1 : 0;
+      st.pinchN = pinch ? (st.pinchN || 0) + 1 : 0;
+      st.fistN = fist ? (st.fistN || 0) + 1 : 0;
+    }
+    const pts = [0, 5, 9, 13, 17].map(j => lm[j]);
+    const palm = { x: pts.reduce((a, p) => a + p.x, 0) / 5, y: pts.reduce((a, p) => a + p.y, 0) / 5 };
+    if (fresh) {
+      if (st.palm) {
+        const vx = palm.x - st.palm.x, vy = palm.y - st.palm.y, pv = st.pv || { x: 0, y: 0 };
+        st.pv = { x: pv.x * .4 + vx * .6, y: pv.y * .4 + vy * .6 };
+      } else st.pv = { x: 0, y: 0 };
+      st.palm = palm;
+    }
     const tip = lm[8];
 
-    // Алақан ашылды — шашырату
-    if (st.openN === 4) {
-      const c = { x: (lm[0].x + lm[9].x) / 2, y: (lm[0].y + lm[9].y) / 2 };
-      scatter(c);
-    }
+    // Алақанмен итеру — гүлдер жоғары ұшады
+    if (mode !== 'pearl' && open && st.pv && Math.hypot(st.pv.x, st.pv.y) > 6) push(palm, st.pv, handSize * 1.5);
+
+    // Ракушка: алақан ашық — ашылады, жұдырық — жабылады
+    if (mode === 'pearl') {
+      sh.visible = st.pointN < 2;
+      sh.x = palm.x; sh.y = palm.y; sh.R = Math.max(45, Math.min(150, handSize * 1.1));
+      if (st.openN >= 3 && sh.target !== 1) { sh.target = 1; collectAll(); }
+      if (st.fistN >= 3) sh.target = 0;
+    } else sh.visible = false;
 
     // Нұсқау — отырғызу / тізу
     if (st.pointN >= 2) {
       if (mode === 'pearl') growStrand(st, tip, now);
-      else {
-        plant(st, tip, now);
-      }
+      else plant(st, tip, now);
     } else { st.last = null; endStrand(st); }
 
     // Шымшу — маржан жібін ұстау
@@ -265,6 +291,35 @@ function handleHands(hands, now) {
     if (st.grab) { const n = st.grab.sd.nodes[st.grab.j]; if (n) { n.x = pp.x; n.y = pp.y; } }
   }
   if (items.length > 900) items.splice(0, items.length - 900);
+}
+
+function push(c, v, R) {
+  for (const it of items) {
+    if (it.homing) continue;
+    if (Math.hypot(it.x - c.x, it.y - c.y) > R) continue;
+    it.flying = true;
+    it.vx = v.x * .8 + rnd(-2, 2);
+    it.vy = Math.min(v.y, 0) * 1.4 - rnd(8, 13);
+    it.vr = rnd(-.2, .2);
+  }
+}
+
+function collectAll() {
+  const ps = pearlSize();
+  for (const sd of strands) for (const n of sd.nodes)
+    items.push({ x: n.x, y: n.y, vx: rnd(-1, 1), vy: rnd(-1, 1), rot: 0, vr: 0, size: ps, sprite: n.sprite,
+      born: -1e9, flying: false, homing: true });
+  strands = [];
+  handStates.forEach(s => { s.strand = null; s.grab = null; });
+  pState.strand = null;
+}
+
+function award(sh) {
+  const pts = sh.inside * 10;
+  score += pts; sh.inside = 0;
+  document.getElementById('scoreN').textContent = score;
+  floaters.push({ x: sh.x, y: sh.y - sh.R * .6, text: '+' + pts, life: 1 });
+  for (let k = 0; k < 16; k++) spark({ x: sh.x, y: sh.y }, 7);
 }
 
 function plant(st, tip, now) {
@@ -334,9 +389,27 @@ function spark(p, power = 3) {
 /* ---------- Физика ---------- */
 function update(k) {
   for (const it of items) if (it.flying) {
-    it.vy += .45 * k; it.x += it.vx * k; it.y += it.vy * k; it.rot += it.vr * k; it.vx *= Math.pow(.99, k);
+    it.vy += .3 * k; it.x += it.vx * k; it.y += it.vy * k; it.rot += it.vr * k; it.vx *= Math.pow(.99, k);
   }
-  items = items.filter(it => !it.flying || (it.y < H + 150 && it.x > -150 && it.x < W + 150));
+  const shells = handStates.map(s => s.shell).filter(sh => sh && sh.visible);
+  for (const sh of shells) {
+    sh.o += (sh.target - sh.o) * Math.min(1, .18 * k);
+    if (sh.target === 0 && sh.o < .15 && sh.inside > 0) award(sh);
+  }
+  for (const it of items) if (it.homing) {
+    let best = null, bd = 1e9;
+    for (const sh of shells) if (sh.o > .3) { const d = Math.hypot(sh.x - it.x, sh.y - it.y); if (d < bd) { bd = d; best = sh; } }
+    if (best) {
+      const dx = best.x - it.x, dy = best.y - it.y, d = bd || 1;
+      it.vx += dx / d * 1.2 * k; it.vy += dy / d * 1.2 * k;
+      if (d < best.R * .45) { it.captured = true; best.inside++; }
+    }
+    it.vx *= Math.pow(.9, k); it.vy *= Math.pow(.9, k);
+    it.x += it.vx * k; it.y += it.vy * k;
+  }
+  items = items.filter(it => !it.captured && (!it.flying || (it.y < H + 150 && it.x > -150 && it.x < W + 150)));
+  for (const f of floaters) { f.y -= 1.2 * k; f.life -= .012 * k; }
+  floaters = floaters.filter(f => f.life > 0);
 
   const grabbed = new Set(handStates.filter(s => s.grab).map(s => s.grab.sd));
   for (const sd of strands) {
@@ -373,8 +446,54 @@ function drawVideo() {
     ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
   }
 }
+function scallopPath(R, hs, up) {
+  const N = 9, sgn = up ? -1 : 1;
+  ctx.beginPath(); ctx.moveTo(-R, 0);
+  for (let i = 0; i < N; i++) {
+    const a1 = Math.PI * (i + 1) / N, am = Math.PI * (i + .5) / N;
+    ctx.quadraticCurveTo(-Math.cos(am) * R * 1.1, sgn * Math.sin(am) * R * hs * 1.1, -Math.cos(a1) * R, sgn * Math.sin(a1) * R * hs);
+  }
+  ctx.closePath();
+}
+function ridges(R, hs, up, color) {
+  const sgn = up ? -1 : 1;
+  ctx.strokeStyle = color; ctx.lineWidth = Math.max(1, R * .025); ctx.beginPath();
+  for (let i = 1; i < 9; i++) {
+    const a = Math.PI * i / 9;
+    ctx.moveTo(0, 0); ctx.lineTo(-Math.cos(a) * R * .95, sgn * Math.sin(a) * R * hs * .95);
+  }
+  ctx.stroke();
+}
+function drawShell(sh) {
+  const { x, y, R } = sh, o = Math.max(0, Math.min(1, sh.o));
+  ctx.save(); ctx.translate(x, y);
+  ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = R * .25; ctx.shadowOffsetY = R * .08;
+  const bg = ctx.createLinearGradient(0, 0, 0, R * .7);
+  bg.addColorStop(0, '#f8cdbb'); bg.addColorStop(1, '#d7867d');
+  ctx.fillStyle = bg; scallopPath(R, .7, false); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ridges(R, .7, false, 'rgba(140,60,55,.35)');
+  ctx.save(); ctx.scale(1, .1 + .9 * o);
+  const lg = ctx.createRadialGradient(0, -R * .4, R * .1, 0, 0, R * 1.1);
+  if (o > .3) { lg.addColorStop(0, '#fff6ef'); lg.addColorStop(.7, '#f3cfc4'); lg.addColorStop(1, '#dc958a'); }
+  else { lg.addColorStop(0, '#fde2d5'); lg.addColorStop(1, '#e39f93'); }
+  ctx.fillStyle = lg; scallopPath(R, 1, true); ctx.fill();
+  ridges(R, 1, true, 'rgba(140,60,55,.3)');
+  ctx.restore();
+  if (o > .35 && sh.inside) {
+    const n = Math.min(sh.inside, 12), ps = R * .28;
+    ctx.globalAlpha = Math.min(1, (o - .35) * 3);
+    for (let j = 0; j < n; j++) {
+      const px = n === 1 ? 0 : (j / (n - 1) - .5) * R * 1.2, py = R * .06 - (j % 2) * R * .1;
+      ctx.drawImage(SPR.pearl[j % SPR.pearl.length], px - ps / 2, py - ps / 2, ps, ps);
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
 function render(now) {
   for (const it of items) {
+    if (it.homing) continue;
     const g = it.flying ? 1 : easeBack(Math.min(1, (now - it.born) / 450));
     const s = it.size * Math.max(0, g);
     ctx.save(); ctx.translate(it.x, it.y); ctx.rotate(it.rot);
@@ -390,6 +509,13 @@ function render(now) {
       const s = ps * easeBack(Math.min(1, (now - n.born) / 300));
       ctx.drawImage(n.sprite, n.x - s / 2, n.y - s / 2, s, s);
     }
+  }
+  for (const sh of handStates.map(s => s.shell)) if (sh && sh.visible) drawShell(sh);
+  for (const it of items) if (it.homing) ctx.drawImage(it.sprite, it.x - it.size / 2, it.y - it.size / 2, it.size, it.size);
+  ctx.textAlign = 'center'; ctx.font = '800 32px system-ui, sans-serif';
+  for (const f of floaters) {
+    ctx.fillStyle = `rgba(255,236,170,${f.life})`; ctx.strokeStyle = `rgba(60,30,0,${f.life * .6})`; ctx.lineWidth = 4;
+    ctx.strokeText(f.text, f.x, f.y); ctx.fillText(f.text, f.x, f.y);
   }
   for (const s of sparks) {
     ctx.fillStyle = `rgba(255,250,225,${s.life})`;
@@ -413,12 +539,13 @@ let lastVideoTime = -1, results = null, last = performance.now();
 function loop(now) {
   const k = Math.min(3, (now - last) / 16.67); last = now;
   computeCover();
+  let fresh = false;
   if (landmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
-    lastVideoTime = video.currentTime;
+    lastVideoTime = video.currentTime; fresh = true;
     try { results = landmarker.detectForVideo(video, now); } catch (e) { console.warn(e); }
   }
   const hands = (results && results.landmarks ? results.landmarks : []).map(lm => lm.map(toScreen));
-  handleHands(hands, now);
+  handleHands(hands, now, fresh);
   pointerDraw(now);
   // ұсталған нүктелерді физикадан кейін де саусақта ұстап тұру
   handStates.forEach((s, i) => {
