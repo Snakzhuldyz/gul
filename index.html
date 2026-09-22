@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="kk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Гүл таяқшасы</title>
+<style>
+  :root { --glass: rgba(20,18,16,.55); --line: rgba(255,255,255,.18); --text: #fff8ec;
+          --sun: #f6b91e; --rose: #d8264a; --pearl: #efe7da; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; background: #000; color: var(--text); overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  canvas { position: fixed; inset: 0; display: block; touch-action: none; }
+  .topbar { position: fixed; left: 0; right: 0; top: 0; display: flex; justify-content: center;
+    gap: 10px; flex-wrap: wrap; padding: calc(env(safe-area-inset-top, 0px) + 14px) 14px 0; z-index: 2; }
+  .modes { display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--glass);
+    border: 1px solid var(--line); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  button { font: inherit; color: var(--text); cursor: pointer; border: 0; }
+  .modes button { padding: 9px 16px; border-radius: 999px; background: transparent; font-size: 15px;
+    font-weight: 600; transition: background .2s, color .2s; }
+  .modes button[data-mode="sunflower"].active { background: var(--sun); color: #3a2400; }
+  .modes button[data-mode="rose"].active { background: var(--rose); color: #fff; }
+  .modes button[data-mode="pearl"].active { background: var(--pearl); color: #3b3328; }
+  .ghost { padding: 9px 16px; border-radius: 999px; background: var(--glass); border: 1px solid var(--line);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); font-size: 15px; }
+  button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  .hint { position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 22px); padding: 10px 18px; border-radius: 999px;
+    background: var(--glass); border: 1px solid var(--line); font-size: 14px; white-space: nowrap;
+    max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis; z-index: 2;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .intro { position: fixed; inset: 0; display: grid; place-items: center; z-index: 5; padding: 24px;
+    background: radial-gradient(circle at 30% 20%, #3a2a06 0, #140f08 45%, #000 100%); }
+  .intro.hidden { display: none; }
+  .card { max-width: 420px; text-align: center; }
+  .card h1 { font-size: clamp(34px, 8vw, 52px); line-height: 1.05; letter-spacing: -.02em; margin-bottom: 14px; }
+  .card .row { font-size: 44px; margin-bottom: 18px; letter-spacing: 8px; }
+  .card p { line-height: 1.5; opacity: .85; margin-bottom: 22px; }
+  #start { padding: 14px 34px; border-radius: 999px; background: var(--sun); color: #3a2400;
+    font-weight: 700; font-size: 17px; }
+  #start:disabled { opacity: .6; cursor: default; }
+  #status { margin-top: 16px; font-size: 14px; min-height: 1.4em; opacity: .8; }
+  @media (max-width: 480px) { .modes button { padding: 8px 11px; font-size: 14px; } .ghost { font-size: 14px; } }
+</style>
+</head>
+<body>
+<video id="video" playsinline muted autoplay></video>
+<canvas id="stage"></canvas>
+
+<div class="topbar">
+  <div class="modes">
+    <button data-mode="sunflower" class="active">🌻 Күнбағыс</button>
+    <button data-mode="rose">🌹 Раушан</button>
+    <button data-mode="pearl">🤍 Маржан</button>
+  </div>
+  <button id="burst" class="ghost">Шашырату</button>
+  <button id="clear" class="ghost">Тазалау</button>
+</div>
+<div id="hint" class="hint">Сұқ саусақпен нұсқа — гүл отырғыз. Алақанды аш — шашырат</div>
+
+<div id="intro" class="intro">
+  <div class="card">
+    <div class="row">🌻🌹🤍</div>
+    <h1>Гүл таяқшасы</h1>
+    <p>Камера алдында қолыңды көтер. Сұқ саусағыңмен сызсаң — гүл өседі, алақаныңды ашсаң — бәрі шашырап кетеді.</p>
+    <button id="start">Камераны қосу</button>
+    <div><button id="touch" class="ghost" style="margin-top:12px">Экранда саусақпен салу</button></div>
+    <div id="status"></div>
+  </div>
+</div>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d');
+const hintEl = document.getElementById('hint');
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', resize); resize();
+
+/* ---------- Спрайттар (гүлдер мен маржандарды алдын ала саламыз) ---------- */
+const TAU = Math.PI * 2, rnd = (a, b) => a + Math.random() * (b - a);
+function mk(s) { const c = document.createElement('canvas'); c.width = c.height = s; return [c, c.getContext('2d')]; }
+
+function sunflower(s, hue) {
+  const [c, g] = mk(s), cx = s / 2;
+  const layers = [{ n: 20, len: .17, w: .07, l: 46, off: 0 }, { n: 20, len: .15, w: .065, l: 58, off: Math.PI / 20 }];
+  for (const L of layers) for (let i = 0; i < L.n; i++) {
+    const a = i / L.n * TAU + L.off + rnd(-.06, .06);
+    g.save(); g.translate(cx, cx); g.rotate(a);
+    const grd = g.createLinearGradient(0, -s * .15, 0, -s * .49);
+    grd.addColorStop(0, `hsl(${hue - 10},95%,${L.l - 14}%)`);
+    grd.addColorStop(1, `hsl(${hue},100%,${L.l}%)`);
+    g.fillStyle = grd; g.beginPath();
+    g.ellipse(0, -s * (.15 + L.len), s * L.w, s * L.len, 0, 0, TAU); g.fill();
+    g.restore();
+  }
+  const cg = g.createRadialGradient(cx, cx, 0, cx, cx, s * .18);
+  cg.addColorStop(0, '#2c1705'); cg.addColorStop(.75, '#5c3310'); cg.addColorStop(1, '#7a4a18');
+  g.fillStyle = cg; g.beginPath(); g.arc(cx, cx, s * .18, 0, TAU); g.fill();
+  for (let i = 0; i < 150; i++) {
+    const r = s * .165 * Math.sqrt(i / 150), a = i * 2.39996;
+    g.fillStyle = i % 2 ? 'rgba(15,6,0,.55)' : 'rgba(160,100,40,.45)';
+    g.beginPath(); g.arc(cx + Math.cos(a) * r, cx + Math.sin(a) * r, s * .008, 0, TAU); g.fill();
+  }
+  return c;
+}
+
+function rose(s, hue, light) {
+  const [c, g] = mk(s), cx = s / 2;
+  for (const a of [rnd(2.1, 2.7), rnd(.3, .9)]) {
+    g.save(); g.translate(cx, cx); g.rotate(a);
+    g.fillStyle = 'hsl(125,42%,30%)'; g.beginPath(); g.ellipse(s * .31, 0, s * .15, s * .065, 0, 0, TAU); g.fill();
+    g.strokeStyle = 'hsl(125,40%,20%)'; g.lineWidth = s * .008;
+    g.beginPath(); g.moveTo(s * .17, 0); g.lineTo(s * .45, 0); g.stroke(); g.restore();
+  }
+  const layers = [[5, .24, .2, light - 8], [5, .17, .16, light - 2], [4, .11, .12, light + 4], [3, .06, .08, light + 8]];
+  layers.forEach(([n, rad, pr, l], li) => {
+    for (let i = 0; i < n; i++) {
+      const a = i / n * TAU + li * .6, x = cx + Math.cos(a) * s * rad * .6, y = cx + Math.sin(a) * s * rad * .6;
+      const grd = g.createRadialGradient(x, y, 0, x, y, s * pr);
+      grd.addColorStop(0, `hsl(${hue},80%,${l + 10}%)`);
+      grd.addColorStop(.7, `hsl(${hue},85%,${l}%)`);
+      grd.addColorStop(1, `hsl(${hue},90%,${l - 14}%)`);
+      g.fillStyle = grd; g.beginPath(); g.arc(x, y, s * pr, 0, TAU); g.fill();
+      g.strokeStyle = `hsla(${hue},90%,${l - 22}%,.5)`; g.lineWidth = s * .006; g.stroke();
+    }
+  });
+  g.strokeStyle = `hsla(${hue},90%,${light - 25}%,.85)`; g.lineWidth = s * .012; g.beginPath();
+  for (let t = 0; t < 6 * Math.PI; t += .1) {
+    const r = s * .004 * t, x = cx + Math.cos(t) * r, y = cx + Math.sin(t) * r;
+    t === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.stroke();
+  return c;
+}
+
+function pearl(s, t) {
+  const [c, g] = mk(s), cx = s / 2, r = s * .42;
+  const grd = g.createRadialGradient(cx - r * .35, cx - r * .4, r * .05, cx, cx, r);
+  grd.addColorStop(0, '#ffffff'); grd.addColorStop(.35, t[0]); grd.addColorStop(.85, t[1]); grd.addColorStop(1, t[2]);
+  g.fillStyle = grd; g.beginPath(); g.arc(cx, cx, r, 0, TAU); g.fill();
+  const rim = g.createRadialGradient(cx + r * .3, cx + r * .35, r * .1, cx, cx, r);
+  rim.addColorStop(0, 'rgba(255,200,230,.25)'); rim.addColorStop(.8, 'rgba(200,220,255,0)'); rim.addColorStop(1, 'rgba(200,220,255,.4)');
+  g.fillStyle = rim; g.beginPath(); g.arc(cx, cx, r, 0, TAU); g.fill();
+  g.fillStyle = 'rgba(255,255,255,.9)'; g.beginPath();
+  g.ellipse(cx - r * .35, cx - r * .42, r * .18, r * .1, -.6, 0, TAU); g.fill();
+  return c;
+}
+
+const SPR = {
+  sunflower: [42, 46, 50, 38, 48, 44].map(h => sunflower(128, h)),
+  rose: [[350, 42], [345, 36], [355, 48], [340, 55], [0, 40], [335, 62]].map(([h, l]) => rose(128, h, l)),
+  pearl: [['#fbf7f0', '#e6ddd0', '#b9ad9d'], ['#fff4f2', '#f0d7d4', '#c7a39f'],
+          ['#fbf8ea', '#eee3c2', '#bfae82'], ['#f5f7fb', '#dde2ea', '#a9b0bd']].map(t => pearl(96, t)),
+};
+
+/* ---------- Күй ---------- */
+let mode = 'sunflower';
+let items = [];     // гүлдер және ұшып бара жатқан маржандар
+let strands = [];   // маржан жіптері
+let sparks = [];
+const handStates = [{}, {}];
+const HINTS = {
+  sunflower: 'Сұқ саусақпен нұсқа — күнбағыс отырғыз. Алақанды аш — шашырат',
+  rose: 'Сұқ саусақпен нұсқа — раушан отырғыз. Алақанды аш — шашырат',
+  pearl: 'Нұсқа — маржан тіз. Шымшып ұста — көтер. Алақанды аш — шашырат',
+};
+document.querySelectorAll('.modes button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.modes button').forEach(x => x.classList.remove('active'));
+  b.classList.add('active'); mode = b.dataset.mode; hintEl.textContent = HINTS[mode];
+});
+document.getElementById('burst').onclick = () => scatter({ x: W / 2, y: H / 2 });
+document.getElementById('touch').onclick = () => document.getElementById('intro').classList.add('hidden');
+document.getElementById('clear').onclick = () => { items = []; strands = []; sparks = []; };
+
+const baseSize = () => Math.max(34, Math.min(84, Math.min(W, H) * .075));
+const pearlSize = () => Math.max(16, Math.min(34, Math.min(W, H) * .035));
+
+/* ---------- Камера және модель ---------- */
+let landmarker = null;
+const statusEl = document.getElementById('status');
+const startBtn = document.getElementById('start');
+startBtn.onclick = async () => {
+  startBtn.disabled = true;
+  try {
+    statusEl.textContent = 'Камера қосылуда…';
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    video.srcObject = stream; await video.play();
+    statusEl.textContent = 'Қолды тану моделі жүктелуде…';
+    const fileset = await FilesetResolver.forVisionTasks(WASM);
+    const opts = d => ({ baseOptions: { modelAssetPath: MODEL, delegate: d }, runningMode: 'VIDEO', numHands: 2 });
+    try { landmarker = await HandLandmarker.createFromOptions(fileset, opts('GPU')); }
+    catch { landmarker = await HandLandmarker.createFromOptions(fileset, opts('CPU')); }
+    document.getElementById('intro').classList.add('hidden');
+  } catch (e) {
+    console.error(e);
+    statusEl.textContent = e && e.name === 'NotAllowedError'
+      ? 'Камераға рұқсат берілмеді. Браузердің мекенжай жолындағы камера белгісін басып, рұқсат бер.'
+      : 'Қолды тану бұл бетте іске қосылмады. «Экранда саусақпен салу» батырмасын басып, экранда сызып көр.';
+    startBtn.disabled = false;
+  }
+};
+
+/* ---------- Координаттар ---------- */
+let cover = { ox: 0, oy: 0, dw: 1, dh: 1 };
+function computeCover() {
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const sc = Math.max(W / vw, H / vh), dw = vw * sc, dh = vh * sc;
+  cover = { ox: (W - dw) / 2, oy: (H - dh) / 2, dw, dh };
+}
+const toScreen = p => ({ x: W - (cover.ox + p.x * cover.dw), y: cover.oy + p.y * cover.dh });
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const ext = (lm, tip, pip) => dist(lm[tip], lm[0]) > dist(lm[pip], lm[0]) * 1.12;
+
+/* ---------- Қимылдар ---------- */
+function handleHands(hands, now) {
+  for (let i = 0; i < 2; i++) {
+    const st = handStates[i], lm = hands[i];
+    if (!lm) { endStrand(st); st.grab = null; st.pointN = st.openN = st.pinchN = 0; st.last = null; continue; }
+    const handSize = dist(lm[0], lm[9]);
+    const idx = ext(lm, 8, 6), mid = ext(lm, 12, 10), ring = ext(lm, 16, 14), pink = ext(lm, 20, 18);
+    const pinch = dist(lm[4], lm[8]) < handSize * .33;
+    const open = idx && mid && ring && pink && !pinch;
+    const point = idx && !mid && !ring && !pink && !pinch;
+    st.pointN = point ? (st.pointN || 0) + 1 : 0;
+    st.openN = open ? (st.openN || 0) + 1 : 0;
+    st.pinchN = pinch ? (st.pinchN || 0) + 1 : 0;
+    const tip = lm[8];
+
+    // Алақан ашылды — шашырату
+    if (st.openN === 4) {
+      const c = { x: (lm[0].x + lm[9].x) / 2, y: (lm[0].y + lm[9].y) / 2 };
+      scatter(c);
+    }
+
+    // Нұсқау — отырғызу / тізу
+    if (st.pointN >= 2) {
+      if (mode === 'pearl') growStrand(st, tip, now);
+      else {
+        plant(st, tip, now);
+      }
+    } else { st.last = null; endStrand(st); }
+
+    // Шымшу — маржан жібін ұстау
+    const pp = { x: (lm[4].x + lm[8].x) / 2, y: (lm[4].y + lm[8].y) / 2 };
+    if (st.pinchN === 2 && !st.grab) {
+      let best = null, bd = 80;
+      strands.forEach(sd => sd.nodes.forEach((n, j) => { const d = dist(n, pp); if (d < bd) { bd = d; best = { sd, j }; } }));
+      st.grab = best;
+    }
+    if (st.pinchN === 0) st.grab = null;
+    if (st.grab) { const n = st.grab.sd.nodes[st.grab.j]; if (n) { n.x = pp.x; n.y = pp.y; } }
+  }
+  if (items.length > 900) items.splice(0, items.length - 900);
+}
+
+function plant(st, tip, now) {
+  const gap = baseSize() * .55;
+  if (!st.last || dist(st.last, tip) > gap) {
+    const s = baseSize() * rnd(.75, 1.25);
+    items.push({ x: tip.x + rnd(-6, 6), y: tip.y + rnd(-6, 6), vx: 0, vy: 0, rot: rnd(0, TAU), vr: 0,
+      size: s, sprite: SPR[mode][Math.floor(Math.random() * SPR[mode].length)], born: now, flying: false });
+    st.last = { x: tip.x, y: tip.y };
+    for (let k = 0; k < 3; k++) spark(tip);
+  }
+}
+
+/* Саусақпен / тінтуірмен салу */
+const pState = {}; let pDown = null;
+canvas.addEventListener('pointerdown', e => { pDown = { x: e.clientX, y: e.clientY }; });
+canvas.addEventListener('pointermove', e => { if (pDown) pDown = { x: e.clientX, y: e.clientY }; });
+['pointerup', 'pointercancel', 'pointerleave'].forEach(t => canvas.addEventListener(t, () => { pDown = null; pState.last = null; endStrand(pState); }));
+function pointerDraw(now) {
+  if (!pDown) return;
+  if (mode === 'pearl') { growStrand(pState, pDown, now); pState.strand.nodes[pState.strand.nodes.length - 1].pin = { ...pDown }; }
+  else plant(pState, pDown, now);
+}
+
+function growStrand(st, tip, now) {
+  const sp = pearlSize() * .92;
+  if (!st.strand) {
+    st.strand = { nodes: [{ x: tip.x, y: tip.y, px: tip.x, py: tip.y, sprite: pickPearl(), born: now }], sp, drawing: true };
+    strands.push(st.strand);
+    return;
+  }
+  const nodes = st.strand.nodes;
+  let last = nodes[nodes.length - 1];
+  let d = dist(last, tip);
+  while (d >= sp && nodes.length < 400) {
+    const t = sp / d, x = last.x + (tip.x - last.x) * t, y = last.y + (tip.y - last.y) * t;
+    last = { x, y, px: x, py: y, sprite: pickPearl(), born: now };
+    nodes.push(last); d = dist(last, tip);
+  }
+  if (Math.random() < .3) spark(tip);
+}
+function endStrand(st) { if (st.strand) { st.strand.drawing = false; st.strand = null; } }
+const pickPearl = () => SPR.pearl[Math.floor(Math.random() * SPR.pearl.length)];
+
+function scatter(c) {
+  for (const it of items) {
+    if (it.flying) continue;
+    const dx = it.x - c.x, dy = it.y - c.y, d = Math.hypot(dx, dy) || 1, sp = rnd(7, 15);
+    it.vx = dx / d * sp + rnd(-2, 2); it.vy = dy / d * sp - rnd(2, 6); it.vr = rnd(-.25, .25); it.flying = true;
+  }
+  const ps = pearlSize();
+  for (const sd of strands) for (const n of sd.nodes) {
+    const dx = n.x - c.x, dy = n.y - c.y, d = Math.hypot(dx, dy) || 1, sp = rnd(6, 14);
+    items.push({ x: n.x, y: n.y, vx: dx / d * sp + rnd(-2, 2), vy: dy / d * sp - rnd(2, 6), rot: 0, vr: 0,
+      size: ps, sprite: n.sprite, born: -1e9, flying: true });
+  }
+  strands = [];
+  handStates.forEach(s => { s.strand = null; s.grab = null; });
+  pState.strand = null;
+  for (let k = 0; k < 24; k++) spark(c, 10);
+}
+
+function spark(p, power = 3) {
+  sparks.push({ x: p.x, y: p.y, vx: rnd(-power, power), vy: rnd(-power, power), life: 1 });
+}
+
+/* ---------- Физика ---------- */
+function update(k) {
+  for (const it of items) if (it.flying) {
+    it.vy += .45 * k; it.x += it.vx * k; it.y += it.vy * k; it.rot += it.vr * k; it.vx *= Math.pow(.99, k);
+  }
+  items = items.filter(it => !it.flying || (it.y < H + 150 && it.x > -150 && it.x < W + 150));
+
+  const grabbed = new Set(handStates.filter(s => s.grab).map(s => s.grab.sd));
+  for (const sd of strands) {
+    const g = grabbed.has(sd) ? .5 : 0;          // ұстап тұрғанда жіп салбырап тұрады
+    for (const n of sd.nodes) {
+      const vx = (n.x - n.px) * .9, vy = (n.y - n.py) * .9;
+      n.px = n.x; n.py = n.y; n.x += vx; n.y += vy + g * k;
+    }
+    for (let it = 0; it < 6; it++) {
+      for (let j = 1; j < sd.nodes.length; j++) {
+        const a = sd.nodes[j - 1], b = sd.nodes[j], dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1;
+        const diff = (d - sd.sp) / d / 2;
+        a.x += dx * diff; a.y += dy * diff; b.x -= dx * diff; b.y -= dy * diff;
+      }
+      for (const s of handStates) if (s.grab && s.grab.sd === sd) {
+        const n = sd.nodes[s.grab.j]; if (n && s.pin) { n.x = s.pin.x; n.y = s.pin.y; }
+      }
+      if (sd.drawing) { const l = sd.nodes[sd.nodes.length - 1]; if (l.pin) { l.x = l.pin.x; l.y = l.pin.y; } }
+    }
+  }
+  for (const s of sparks) { s.x += s.vx * k; s.y += s.vy * k; s.vx *= .94; s.vy *= .94; s.life -= .035 * k; }
+  sparks = sparks.filter(s => s.life > 0);
+}
+
+/* ---------- Сурет салу ---------- */
+const easeBack = t => { const c = 1.7; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+function drawVideo() {
+  if (video.readyState >= 2) {
+    ctx.save(); ctx.translate(W, 0); ctx.scale(-1, 1);
+    ctx.drawImage(video, cover.ox, cover.oy, cover.dw, cover.dh); ctx.restore();
+  } else {
+    const bg = ctx.createRadialGradient(W * .3, H * .2, 0, W * .5, H * .5, Math.max(W, H));
+    bg.addColorStop(0, '#3a2a06'); bg.addColorStop(.45, '#140f08'); bg.addColorStop(1, '#000');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  }
+}
+function render(now) {
+  for (const it of items) {
+    const g = it.flying ? 1 : easeBack(Math.min(1, (now - it.born) / 450));
+    const s = it.size * Math.max(0, g);
+    ctx.save(); ctx.translate(it.x, it.y); ctx.rotate(it.rot);
+    ctx.drawImage(it.sprite, -s / 2, -s / 2, s, s); ctx.restore();
+  }
+  for (const sd of strands) {
+    if (sd.nodes.length > 1) {
+      ctx.strokeStyle = 'rgba(245,235,215,.55)'; ctx.lineWidth = 1.5; ctx.beginPath();
+      sd.nodes.forEach((n, j) => j ? ctx.lineTo(n.x, n.y) : ctx.moveTo(n.x, n.y)); ctx.stroke();
+    }
+    const ps = pearlSize();
+    for (const n of sd.nodes) {
+      const s = ps * easeBack(Math.min(1, (now - n.born) / 300));
+      ctx.drawImage(n.sprite, n.x - s / 2, n.y - s / 2, s, s);
+    }
+  }
+  for (const s of sparks) {
+    ctx.fillStyle = `rgba(255,250,225,${s.life})`;
+    ctx.beginPath(); ctx.arc(s.x, s.y, 2.2 * s.life + .5, 0, TAU); ctx.fill();
+  }
+}
+const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+               [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+function drawHands(hands) {
+  for (const lm of hands) {
+    ctx.strokeStyle = 'rgba(255,255,255,.45)'; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (const [a, b] of BONES) { ctx.moveTo(lm[a].x, lm[a].y); ctx.lineTo(lm[b].x, lm[b].y); }
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,.8)';
+    for (const p of lm) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, TAU); ctx.fill(); }
+  }
+}
+
+/* ---------- Негізгі цикл ---------- */
+let lastVideoTime = -1, results = null, last = performance.now();
+function loop(now) {
+  const k = Math.min(3, (now - last) / 16.67); last = now;
+  computeCover();
+  if (landmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    try { results = landmarker.detectForVideo(video, now); } catch (e) { console.warn(e); }
+  }
+  const hands = (results && results.landmarks ? results.landmarks : []).map(lm => lm.map(toScreen));
+  handleHands(hands, now);
+  pointerDraw(now);
+  // ұсталған нүктелерді физикадан кейін де саусақта ұстап тұру
+  handStates.forEach((s, i) => {
+    const lm = hands[i];
+    s.pin = lm ? { x: (lm[4].x + lm[8].x) / 2, y: (lm[4].y + lm[8].y) / 2 } : null;
+    if (s.strand && lm) s.strand.nodes[s.strand.nodes.length - 1].pin = { x: lm[8].x, y: lm[8].y };
+  });
+  update(k);
+  drawVideo();
+  render(now);
+  drawHands(hands);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
